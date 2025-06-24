@@ -57,6 +57,8 @@ client_manager = ClientManager()
 # Pydantic Models for Business Context
 # -------------------------
 class BusinessBlueprint(BaseModel):
+    raw_blueprint: Optional[str] = None  # Primary field for blueprint content
+    # Legacy structured fields (optional for backwards compatibility)
     title: Optional[str] = None
     description: Optional[str] = None
     industry: Optional[str] = None
@@ -73,17 +75,18 @@ class BusinessBlueprint(BaseModel):
     challenges: Optional[List[str]] = []
     resources: Optional[List[str]] = []
     affiliate_links: Optional[List[str]] = []
-    raw_blueprint: Optional[str] = None  # Full raw text of the business plan
 
 class UserBusinessProfile(BaseModel):
-    experience_level: Optional[str] = None  # beginner, intermediate, advanced
-    available_capital: Optional[str] = None
-    time_commitment: Optional[str] = None  # part-time, full-time
-    skills: List[str] = []
+    raw_profile: Optional[str] = None  # Primary field for profile info like "experience_level:intermediate\navailable_capital:$10,000"
+    skills: List[str] = []  # Structured arrays for easy processing
     interests: List[str] = []
-    location: Optional[str] = None
     goals: List[str] = []
-    risk_tolerance: Optional[str] = None  # low, medium, high
+    risk_tolerance: Optional[str] = None
+    # Legacy structured fields (optional for backwards compatibility)
+    experience_level: Optional[str] = None
+    available_capital: Optional[str] = None
+    time_commitment: Optional[str] = None
+    location: Optional[str] = None
 
 class BusinessRequest(BaseModel):
     user_id: str
@@ -169,66 +172,60 @@ def build_business_assistant_instructions(user_profile: UserBusinessProfile, blu
 - Be concise but comprehensive
 - Focus on rapid execution and testing"""
 
-    # Add user profile information
-    if any([user_profile.experience_level, user_profile.available_capital, user_profile.skills, user_profile.interests]):
-        profile_text = "\n\n**User Profile:**\n"
+    # Add user profile information - prioritize raw_profile if available
+    profile_sections = []
+    
+    if user_profile.raw_profile:
+        profile_sections.append(f"**User Background:** {user_profile.raw_profile}")
+    else:
+        # Fallback to structured fields
+        structured_profile = []
         if user_profile.experience_level:
-            profile_text += f"- Experience Level: {user_profile.experience_level}\n"
+            structured_profile.append(f"Experience Level: {user_profile.experience_level}")
         if user_profile.available_capital:
-            profile_text += f"- Available Capital: {user_profile.available_capital}\n"
+            structured_profile.append(f"Available Capital: {user_profile.available_capital}")
         if user_profile.time_commitment:
-            profile_text += f"- Time Commitment: {user_profile.time_commitment}\n"
-        if user_profile.skills:
-            profile_text += f"- Current Skills: {', '.join(user_profile.skills)}\n"
-        if user_profile.interests:
-            profile_text += f"- Interests: {', '.join(user_profile.interests)}\n"
+            structured_profile.append(f"Time Commitment: {user_profile.time_commitment}")
         if user_profile.location:
-            profile_text += f"- Location: {user_profile.location}\n"
-        if user_profile.goals:
-            profile_text += f"- Goals: {', '.join(user_profile.goals)}\n"
-        if user_profile.risk_tolerance:
-            profile_text += f"- Risk Tolerance: {user_profile.risk_tolerance}\n"
-        base_instructions += profile_text
+            structured_profile.append(f"Location: {user_profile.location}")
+        if structured_profile:
+            profile_sections.append(f"**User Background:** {', '.join(structured_profile)}")
+    
+    # Always include structured arrays if provided
+    if user_profile.skills:
+        profile_sections.append(f"**Current Skills:** {', '.join(user_profile.skills)}")
+    if user_profile.interests:
+        profile_sections.append(f"**Interests:** {', '.join(user_profile.interests)}")
+    if user_profile.goals:
+        profile_sections.append(f"**Goals:** {', '.join(user_profile.goals)}")
+    if user_profile.risk_tolerance:
+        profile_sections.append(f"**Risk Tolerance:** {user_profile.risk_tolerance}")
+    
+    if profile_sections:
+        base_instructions += "\n\n**User Profile:**\n" + "\n".join([f"- {section}" for section in profile_sections])
 
-    # Add blueprint context if provided
+    # Add blueprint context - prioritize raw_blueprint if available
     if blueprint:
-        context_text = "\n\n**Current Business Blueprint:**\n"
         if blueprint.raw_blueprint:
-            context_text += f"{blueprint.raw_blueprint}\n"
+            base_instructions += f"\n\n**Current Business Blueprint:**\n{blueprint.raw_blueprint}"
         else:
+            # Fallback to structured fields
+            context_parts = []
             if blueprint.title:
-                context_text += f"**Title:** {blueprint.title}\n"
+                context_parts.append(f"**Title:** {blueprint.title}")
             if blueprint.description:
-                context_text += f"**Description:** {blueprint.description}\n"
-            if blueprint.industry:
-                context_text += f"**Industry:** {blueprint.industry}\n"
-            if blueprint.target_market:
-                context_text += f"**Target Market:** {blueprint.target_market}\n"
-            if blueprint.revenue_model:
-                context_text += f"**Revenue Model:** {blueprint.revenue_model}\n"
+                context_parts.append(f"**Description:** {blueprint.description}")
             if blueprint.startup_costs:
-                context_text += f"**Startup Costs:** {blueprint.startup_costs}\n"
-            if blueprint.monthly_costs:
-                context_text += f"**Monthly Operating Costs:** {blueprint.monthly_costs}\n"
+                context_parts.append(f"**Startup Costs:** {blueprint.startup_costs}")
+            if blueprint.revenue_model:
+                context_parts.append(f"**Revenue Model:** {blueprint.revenue_model}")
             if blueprint.profit_margins:
-                context_text += f"**Profit Margins:** {blueprint.profit_margins}\n"
-            if blueprint.equipment_needed:
-                context_text += f"**Equipment Needed:** {', '.join(blueprint.equipment_needed)}\n"
-            if blueprint.skills_required:
-                context_text += f"**Skills Required:** {', '.join(blueprint.skills_required)}\n"
-            if blueprint.marketing_strategy:
-                context_text += f"**Marketing Strategy:** {blueprint.marketing_strategy}\n"
-            if blueprint.step_by_step_plan:
-                context_text += f"**Implementation Steps:**\n"
-                for i, step in enumerate(blueprint.step_by_step_plan, 1):
-                    context_text += f"  {i}. {step}\n"
-            if blueprint.success_metrics:
-                context_text += f"**Success Metrics:** {blueprint.success_metrics}\n"
-            if blueprint.challenges:
-                context_text += f"**Potential Challenges:** {', '.join(blueprint.challenges)}\n"
-            if blueprint.resources:
-                context_text += f"**Recommended Resources:** {', '.join(blueprint.resources)}\n"
-        base_instructions += context_text
+                context_parts.append(f"**Profit Margins:** {blueprint.profit_margins}")
+            if blueprint.target_market:
+                context_parts.append(f"**Target Market:** {blueprint.target_market}")
+            
+            if context_parts:
+                base_instructions += "\n\n**Current Business Blueprint:**\n" + "\n".join(context_parts)
 
     base_instructions += "\n\n**Always remember:** Focus on helping the user take immediate action toward launching their business, just like Chris Koerner's approach of 'doing the thing' rather than overthinking it."
 
