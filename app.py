@@ -22,13 +22,15 @@ logger = logging.getLogger(__name__)
 class Config:
     def __init__(self):
         self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-        self.ASSISTANT_ID = os.getenv("ASSISTANT_ID")
-        self.SUPABASE_URL = os.getenv("SUPABASE_URL")
-        self.SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+        self.ASSISTANT_ID   = os.getenv("ASSISTANT_ID")
+        self.SUPABASE_URL   = os.getenv("SUPABASE_URL")
+        self.SUPABASE_KEY   = os.getenv("SUPABASE_KEY")
 
     def validate(self):
-        missing = [v for v in ["OPENAI_API_KEY","ASSISTANT_ID","SUPABASE_URL","SUPABASE_KEY"]
-                   if not getattr(self, v)]
+        missing = [
+            v for v in ["OPENAI_API_KEY","ASSISTANT_ID","SUPABASE_URL","SUPABASE_KEY"]
+            if not getattr(self, v)
+        ]
         if missing:
             raise ValueError(f"Missing required env vars: {missing}")
 
@@ -139,9 +141,17 @@ async def insert_chat(
         payload["chat_id"] = chat_id
 
     async with httpx.AsyncClient() as client:
+        # 1. Ensure the user exists (upsert into users)
+        if user_id:
+            upsert_url = f"{config.SUPABASE_URL}/rest/v1/users?on_conflict=user_id"
+            resp = await client.post(upsert_url, json={"user_id": user_id}, headers=headers)
+            if resp.status_code not in (200, 201):
+                logger.warning(f"Upsert user failed ({resp.status_code}): {await resp.aread()}")
+
+        # 2. Now insert into chat
         r = await client.post(url, json=payload, headers=headers)
 
-        # Log and swallow 409 so it doesn't bubble up
+        # If FK for blueprint_id or thread_id fails, log and swallow
         if r.status_code == 409:
             body = await r.aread()
             logger.error(f"Supabase insert conflict (409): {body}")
@@ -156,10 +166,86 @@ def build_business_assistant_instructions(
     user_profile: UserBusinessProfile,
     blueprint: Optional[BusinessBlueprint] = None
 ) -> str:
-    # ... (unchanged from your original)
-    base_instructions = """You are the Blueprint Lab Business Assistant...
-    """
-    # [snip for brevity; include your full original builder here]
+    base_instructions = """You are the Blueprint Lab Business Assistant, an expert entrepreneurial mentor inspired by Chris Koerner's approach to launching successful side hustles. You specialize in:
+
+🚀 **Business Plan Analysis**: Breaking down and optimizing business blueprints
+💡 **Side Hustle Strategy**: Turning skills and interests into profitable ventures  
+📊 **Market Validation**: Helping validate business ideas before launch
+💰 **Revenue Optimization**: Maximizing profit margins and scaling strategies
+⚡ **Execution Guidance**: Step-by-step implementation roadmaps
+🛠️ **Resource Matching**: Connecting users with the right tools and affiliate resources
+
+**Your Personality:**
+- Direct and action-oriented (like Chris Koerner's "just do the thing" approach)
+- Encouraging but realistic about challenges
+- Focused on practical, executable advice
+- Data-driven when discussing financials and metrics
+- Emphasize speed to market and MVP concepts
+
+**Your Expertise Areas:**
+- Converting skills into profitable business models
+- Low-cost startup strategies and bootstrapping
+- Digital marketing and organic growth tactics
+- Leveraging Chris Koerner's 75+ business experiences
+- Affiliate marketing and resource monetization
+- Risk assessment and mitigation strategies
+
+**Response Format:**
+- Always provide actionable next steps
+- Use markdown formatting for plans and lists
+- Include specific numbers when discussing costs/revenue
+- Reference relevant tools from the Blueprint Lab toolkit when applicable
+- Be concise but comprehensive
+- Focus on rapid execution and testing"""
+    # add user_profile details...
+    profile_sections = []
+    if user_profile.raw_profile:
+        profile_sections.append(f"**User Background:** {user_profile.raw_profile}")
+    else:
+        structured = []
+        if user_profile.experience_level:
+            structured.append(f"Experience Level: {user_profile.experience_level}")
+        if user_profile.available_capital:
+            structured.append(f"Available Capital: {user_profile.available_capital}")
+        if user_profile.time_commitment:
+            structured.append(f"Time Commitment: {user_profile.time_commitment}")
+        if user_profile.location:
+            structured.append(f"Location: {user_profile.location}")
+        if structured:
+            profile_sections.append(f"**User Background:** {', '.join(structured)}")
+    if user_profile.skills:
+        profile_sections.append(f"**Current Skills:** {', '.join(user_profile.skills)}")
+    if user_profile.interests:
+        profile_sections.append(f"**Interests:** {', '.join(user_profile.interests)}")
+    if user_profile.goals:
+        profile_sections.append(f"**Goals:** {', '.join(user_profile.goals)}")
+    if user_profile.risk_tolerance:
+        profile_sections.append(f"**Risk Tolerance:** {user_profile.risk_tolerance}")
+    if profile_sections:
+        base_instructions += "\n\n**User Profile:**\n" + "\n".join(f"- {s}" for s in profile_sections)
+
+    # add blueprint context...
+    if blueprint:
+        if blueprint.raw_blueprint:
+            base_instructions += f"\n\n**Current Business Blueprint:**\n{blueprint.raw_blueprint}"
+        else:
+            ctx = []
+            if blueprint.title:
+                ctx.append(f"**Title:** {blueprint.title}")
+            if blueprint.description:
+                ctx.append(f"**Description:** {blueprint.description}")
+            if blueprint.startup_costs:
+                ctx.append(f"**Startup Costs:** {blueprint.startup_costs}")
+            if blueprint.revenue_model:
+                ctx.append(f"**Revenue Model:** {blueprint.revenue_model}")
+            if blueprint.profit_margins:
+                ctx.append(f"**Profit Margins:** {blueprint.profit_margins}")
+            if blueprint.target_market:
+                ctx.append(f"**Target Market:** {blueprint.target_market}")
+            if ctx:
+                base_instructions += "\n\n**Current Business Blueprint:**\n" + "\n".join(ctx)
+
+    base_instructions += "\n\n**Always remember:** Focus on helping the user take immediate action toward launching their business, just like Chris Koerner's 'doing the thing' approach."
     return base_instructions
 
 # -------------------------
@@ -172,7 +258,6 @@ async def run_assistant_conversation(
     instructions: str,
     max_wait_time: int = 30
 ) -> str:
-    # ... (unchanged)
     try:
         await client.beta.threads.messages.create(
             thread_id=thread_id, role="user", content=message
@@ -180,26 +265,32 @@ async def run_assistant_conversation(
         run = await client.beta.threads.runs.create(
             thread_id=thread_id, assistant_id=config.ASSISTANT_ID, instructions=instructions
         )
+
         start = asyncio.get_event_loop().time()
         while True:
             if asyncio.get_event_loop().time() - start > max_wait_time:
                 logger.warning("Assistant run timed out")
                 await client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
-                return "I'm taking longer than usual..."
-            status = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+                return "I'm taking longer than usual to respond. Please try rephrasing your request."
+
+            status = await client.beta.threads.runs.retrieve(
+                thread_id=thread_id, run_id=run.id
+            )
             if status.status == "completed":
                 break
             if status.status in ("failed","cancelled","expired"):
                 logger.error(f"Run failed: {status.status}")
-                return "I encountered an issue..."
+                return "I encountered an issue processing your request."
             await asyncio.sleep(0.5)
+
         msgs = await client.beta.threads.messages.list(
             thread_id=thread_id, order="desc", limit=1
         )
         if msgs.data and msgs.data[0].role == "assistant":
             content = msgs.data[0].content[0]
             return getattr(content.text, "value", "")
-        return "I couldn't generate a proper response."
+        return "I couldn't generate a proper response. Please try again."
+
     except Exception as e:
         logger.error(f"Assistant conversation error: {e}")
         return f"I encountered an error: {e}"
@@ -216,7 +307,7 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"status": "healthy", "message": "Blueprint Lab is ready!"}
+    return {"status": "healthy", "message": "Blueprint Lab Business Assistant is ready to help you launch your side hustle!"}
 
 @app.get("/health")
 async def health():
@@ -236,17 +327,17 @@ async def business_endpoint(req: BusinessRequest):
                 use_existing = False
 
         thread_id = req.thread_id if use_existing else (await client.beta.threads.create()).id
+        logger.info(f"Thread ID: {thread_id}")
 
         # Build instructions & run
-        instructions = build_business_assistant_instructions(req.user_profile, req.blueprint)
+        instructions  = build_business_assistant_instructions(req.user_profile, req.blueprint)
         response_text = await run_assistant_conversation(
             client, thread_id, req.usermessage, instructions
         )
 
-        # Append follow-ups & actions (unchanged)
-        # [your existing follow-up/actions logic here]
+        # (Your follow-up / recommended actions logic here...)
 
-        # Persist (now safe even if FK fails)
+        # Persist the bot response (safe even if FK fails)
         try:
             await insert_chat(
                 req.user_id, "bot", response_text,
@@ -267,10 +358,10 @@ async def business_endpoint(req: BusinessRequest):
     except Exception as e:
         logger.error(f"Business endpoint error: {e}", exc_info=True)
         return BusinessResponse(
-            text="I'm having trouble processing your request right now. Could you please try again?",
+            text="I'm having trouble processing your request right now. Could you try again?",
             blueprint_id=req.blueprint_id,
             thread_id=req.thread_id or "error",
             chat_id=req.chat_id,
             follow_up_questions=["Could you try asking in a different way?"],
-            recommended_actions=["Check the Blueprint Lab toolkit"]
+            recommended_actions=["Check the Blueprint Lab toolkit for immediate resources"]
         )
