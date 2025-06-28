@@ -141,22 +141,18 @@ async def insert_chat(
         payload["chat_id"] = chat_id
 
     async with httpx.AsyncClient() as client:
-        # 1. Ensure the user exists (upsert into users)
+        # Ensure user exists
         if user_id:
             upsert_url = f"{config.SUPABASE_URL}/rest/v1/users?on_conflict=user_id"
             resp = await client.post(upsert_url, json={"user_id": user_id}, headers=headers)
             if resp.status_code not in (200, 201):
                 logger.warning(f"Upsert user failed ({resp.status_code}): {await resp.aread()}")
 
-        # 2. Now insert into chat
+        # Insert chat
         r = await client.post(url, json=payload, headers=headers)
-
-        # If FK for blueprint_id or thread_id fails, log and swallow
         if r.status_code == 409:
-            body = await r.aread()
-            logger.error(f"Supabase insert conflict (409): {body}")
+            logger.error(f"Supabase insert conflict (409): {await r.aread()}")
             return
-
         r.raise_for_status()
 
 # -------------------------
@@ -166,87 +162,67 @@ def build_business_assistant_instructions(
     user_profile: UserBusinessProfile,
     blueprint: Optional[BusinessBlueprint] = None
 ) -> str:
-    base_instructions = """You are the Blueprint Lab Business Assistant, an expert entrepreneurial mentor inspired by Chris Koerner's approach to launching successful side hustles. You specialize in:
+    # ————— CHANGED: more engaging, remove catchphrase, enforce clarifying questions —————
+    base = """You are the Blueprint Lab Business Assistant, an entrepreneurial mentor with a friendly, conversational style. You help users turn ideas into action by:
 
-🚀 **Business Plan Analysis**: Breaking down and optimizing business blueprints
-💡 **Side Hustle Strategy**: Turning skills and interests into profitable ventures  
-📊 **Market Validation**: Helping validate business ideas before launch
-💰 **Revenue Optimization**: Maximizing profit margins and scaling strategies
-⚡ **Execution Guidance**: Step-by-step implementation roadmaps
-🛠️ **Resource Matching**: Connecting users with the right tools and affiliate resources
+• Asking at least one open-ended clarifying question up front to understand their needs.  
+• Providing practical, step-by-step guidance.  
+• Using varied, engaging language—avoid repetitive slogans or catchphrases.  
+• Tailoring advice to their background, goals, and resources.
 
-**Your Personality:**
-- Direct and action-oriented (like Chris Koerner's "just do the thing" approach)
-- Encouraging but realistic about challenges
-- Focused on practical, executable advice
-- Data-driven when discussing financials and metrics
-- Emphasize speed to market and MVP concepts
+**Your Tone:** Warm, curious, and dynamic.  
+**Your Style:**  
+  1. Start with a brief acknowledgment of what the user said.  
+  2. Ask 1–2 clarifying questions.  
+  3. Offer 3–5 actionable recommendations, with concrete next steps.  
+  4. End by inviting further questions.
 
-**Your Expertise Areas:**
-- Converting skills into profitable business models
-- Low-cost startup strategies and bootstrapping
-- Digital marketing and organic growth tactics
-- Leveraging Chris Koerner's 75+ business experiences
-- Affiliate marketing and resource monetization
-- Risk assessment and mitigation strategies
-
-**Response Format:**
-- Always provide actionable next steps
-- Use markdown formatting for plans and lists
-- Include specific numbers when discussing costs/revenue
-- Reference relevant tools from the Blueprint Lab toolkit when applicable
-- Be concise but comprehensive
-- Focus on rapid execution and testing"""
-    # add user_profile details...
-    profile_sections = []
+"""
+    # insert user profile context...
+    sections = []
     if user_profile.raw_profile:
-        profile_sections.append(f"**User Background:** {user_profile.raw_profile}")
+        sections.append(f"**User Background:** {user_profile.raw_profile}")
     else:
-        structured = []
+        struct = []
         if user_profile.experience_level:
-            structured.append(f"Experience Level: {user_profile.experience_level}")
+            struct.append(f"Experience Level: {user_profile.experience_level}")
         if user_profile.available_capital:
-            structured.append(f"Available Capital: {user_profile.available_capital}")
+            struct.append(f"Available Capital: {user_profile.available_capital}")
         if user_profile.time_commitment:
-            structured.append(f"Time Commitment: {user_profile.time_commitment}")
+            struct.append(f"Time Commitment: {user_profile.time_commitment}")
         if user_profile.location:
-            structured.append(f"Location: {user_profile.location}")
-        if structured:
-            profile_sections.append(f"**User Background:** {', '.join(structured)}")
+            struct.append(f"Location: {user_profile.location}")
+        if struct:
+            sections.append(f"**User Background:** {', '.join(struct)}")
     if user_profile.skills:
-        profile_sections.append(f"**Current Skills:** {', '.join(user_profile.skills)}")
+        sections.append(f"**Skills:** {', '.join(user_profile.skills)}")
     if user_profile.interests:
-        profile_sections.append(f"**Interests:** {', '.join(user_profile.interests)}")
+        sections.append(f"**Interests:** {', '.join(user_profile.interests)}")
     if user_profile.goals:
-        profile_sections.append(f"**Goals:** {', '.join(user_profile.goals)}")
+        sections.append(f"**Goals:** {', '.join(user_profile.goals)}")
     if user_profile.risk_tolerance:
-        profile_sections.append(f"**Risk Tolerance:** {user_profile.risk_tolerance}")
-    if profile_sections:
-        base_instructions += "\n\n**User Profile:**\n" + "\n".join(f"- {s}" for s in profile_sections)
+        sections.append(f"**Risk Tolerance:** {user_profile.risk_tolerance}")
+    if sections:
+        base += "\n\n**User Profile:**\n" + "\n".join(f"- {s}" for s in sections)
 
-    # add blueprint context...
+    # insert blueprint context...
     if blueprint:
         if blueprint.raw_blueprint:
-            base_instructions += f"\n\n**Current Business Blueprint:**\n{blueprint.raw_blueprint}"
+            base += f"\n\n**Current Blueprint:**\n{blueprint.raw_blueprint}"
         else:
             ctx = []
             if blueprint.title:
-                ctx.append(f"**Title:** {blueprint.title}")
+                ctx.append(f"Title: {blueprint.title}")
             if blueprint.description:
-                ctx.append(f"**Description:** {blueprint.description}")
-            if blueprint.startup_costs:
-                ctx.append(f"**Startup Costs:** {blueprint.startup_costs}")
+                ctx.append(f"Description: {blueprint.description}")
             if blueprint.revenue_model:
-                ctx.append(f"**Revenue Model:** {blueprint.revenue_model}")
-            if blueprint.profit_margins:
-                ctx.append(f"**Profit Margins:** {blueprint.profit_margins}")
-            if blueprint.target_market:
-                ctx.append(f"**Target Market:** {blueprint.target_market}")
+                ctx.append(f"Revenue Model: {blueprint.revenue_model}")
+            if blueprint.startup_costs:
+                ctx.append(f"Startup Costs: {blueprint.startup_costs}")
             if ctx:
-                base_instructions += "\n\n**Current Business Blueprint:**\n" + "\n".join(ctx)
+                base += "\n\n**Current Blueprint:**\n" + "\n".join(f"- {c}" for c in ctx)
 
-    base_instructions += "\n\n**Always remember:** Focus on helping the user take immediate action toward launching their business, just like Chris Koerner's 'doing the thing' approach."
-    return base_instructions
+    return base
 
 # -------------------------
 # Assistant Run Manager
@@ -271,7 +247,7 @@ async def run_assistant_conversation(
             if asyncio.get_event_loop().time() - start > max_wait_time:
                 logger.warning("Assistant run timed out")
                 await client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
-                return "I'm taking longer than usual to respond. Please try rephrasing your request."
+                return "I'm taking longer than usual—could you try rephrasing?"
 
             status = await client.beta.threads.runs.retrieve(
                 thread_id=thread_id, run_id=run.id
@@ -280,7 +256,7 @@ async def run_assistant_conversation(
                 break
             if status.status in ("failed","cancelled","expired"):
                 logger.error(f"Run failed: {status.status}")
-                return "I encountered an issue processing your request."
+                return "I ran into an issue—please try again."
             await asyncio.sleep(0.5)
 
         msgs = await client.beta.threads.messages.list(
@@ -289,8 +265,7 @@ async def run_assistant_conversation(
         if msgs.data and msgs.data[0].role == "assistant":
             content = msgs.data[0].content[0]
             return getattr(content.text, "value", "")
-        return "I couldn't generate a proper response. Please try again."
-
+        return "I couldn't generate a proper response. Please let me know!"
     except Exception as e:
         logger.error(f"Assistant conversation error: {e}")
         return f"I encountered an error: {e}"
@@ -307,7 +282,7 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"status": "healthy", "message": "Blueprint Lab Business Assistant is ready to help you launch your side hustle!"}
+    return {"status": "healthy", "message": "Blueprint Lab Business Assistant is ready!"}
 
 @app.get("/health")
 async def health():
@@ -335,9 +310,7 @@ async def business_endpoint(req: BusinessRequest):
             client, thread_id, req.usermessage, instructions
         )
 
-        # (Your follow-up / recommended actions logic here...)
-
-        # Persist the bot response (safe even if FK fails)
+        # Persist the bot response
         try:
             await insert_chat(
                 req.user_id, "bot", response_text,
@@ -351,17 +324,17 @@ async def business_endpoint(req: BusinessRequest):
             blueprint_id=req.blueprint_id,
             thread_id=thread_id,
             chat_id=req.chat_id,
-            follow_up_questions=[],
-            recommended_actions=[]
+            follow_up_questions=[],        # inline questions are in the assistant text
+            recommended_actions=[]         # actions are part of the assistant text
         )
 
     except Exception as e:
         logger.error(f"Business endpoint error: {e}", exc_info=True)
         return BusinessResponse(
-            text="I'm having trouble processing your request right now. Could you try again?",
+            text="Sorry, I'm having trouble right now. Could you try again?",
             blueprint_id=req.blueprint_id,
             thread_id=req.thread_id or "error",
             chat_id=req.chat_id,
-            follow_up_questions=["Could you try asking in a different way?"],
-            recommended_actions=["Check the Blueprint Lab toolkit for immediate resources"]
+            follow_up_questions=["Could you rephrase your request?"],  
+            recommended_actions=["Check your request format"]
         )
